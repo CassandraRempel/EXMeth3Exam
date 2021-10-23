@@ -1,0 +1,348 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Riccardo Fusaroli"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment 3 - Part 2 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia. We then looked at whether we could replicate results from the previous literature.
+We now want to know whether we can automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+Again, remember that the dataset containst 7 studies and 3 languages. Feel free to only include Danish (Study 1-4) if you feel that adds too much complexity.
+
+Issues to be discussed your report:
+- Should you run the analysis on all languages/studies at the same time? 
+- Choose your best acoustic feature from part 1. How well can you diagnose schizophrenia just using it?
+- Identify the best combination of acoustic features to diagnose schizophrenia using logistic regression.
+- Discuss the "classification" process: which methods are you using? Which confounds should you be aware of? What are the strength and limitation of the analysis?
+- Bonus question: Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them. 
+- Bonus Bonus question: It is possible combine the output of multiple  classification models to improve classification accuracy. For inspiration see,
+https://machinelearningmastery.com/machine-learning-ensembles-with-r/
+ The interested reader might also want to look up 'The BigChaos Solution to the Netflix Grand Prize'
+
+## Learning objectives
+- Learn the basics of classification in a machine learning framework
+- Design, fit and report logistic regressions
+- Apply feature selection techniques
+
+### Let's start
+
+We first want to build a logistic regression to see whether you can diagnose schizophrenia from your best acoustic feature. Let's use the full dataset and calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve). You need to think carefully as to how we should (or not) use study and subject ID.
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures. Alternatively, the groupdata2 and cvms package created by Ludvig are an easy solution. 
+
+N.B. the predict() function generates log odds (the full scale between minus and plus infinity). Log odds > 0 indicates a choice of 1, below a choice of 0.
+N.N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.N.N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+N.N.N.N.B. A more advanced solution could rely on the tidymodels set of packages (warning: Time-consuming to learn as the documentation is sparse, but totally worth it)
+
+
+## Load libraries + data
+```{r}
+set.seed(123)
+library(tidyverse)
+library(lmerTest)
+library(broom.mixed)
+library(e1071)
+library(caret)
+library(glmnet)
+library(cvms)
+library(groupdata2)
+library(tidymodels)
+library(pROC)
+
+
+raw_dat <- read_csv("FINAL_df.csv")
+
+```
+### Helper functions
+```{r}
+#set up for rest of portfolio, making functions to access
+
+logit2prob <- function(x) {
+  # https://www.wolframalpha.com/input/?i=log%28p%2F%281-p%29%29+%3D+x+isolate+p
+  exp(x) / (1+exp(x))
+}
+
+predict_to_tibble <- function(model) {
+  predict(model, re.form=NA, type="response") %>% 
+    as_tibble() %>% 
+    mutate(row_num = row_number(), 
+           pred = if_else(value > 0.5, "Schizophrenia", "Control")) %>% 
+    select(row_num, pred)
+}
+
+my_auc <- function(obs, pred) {
+  Metrics::auc(as.numeric(obs), as.numeric(pred))  
+}
+
+normalize <- function(x) {
+    (x-mean(x, na.rm = T)) / sd(x, na.rm = T)
+}
+```
+
+
+
+### Getting dataset
+```{r}
+
+#take raw data and filter only Danish participants
+#change data type to factors, so the data is accessible
+#for only diagnosis and ID, as the question asks for
+#R doesnt know it's one person, one number. SO have to demonstrate that in the code
+danish_dat <- raw_dat %>%
+  filter(Language == "Danish") %>%
+  rename(pitch_variability = freq_iqr) %>%
+  #mutate to factor, so data is usable
+  mutate(Diagnosis = as_factor(Diagnosis), 
+         real_ID = as_factor(real_ID)) %>%
+  select(
+    -c(
+      file_name,
+      diagnosis,
+      Participant.x,
+      trial_nr,
+      soundname,
+      #Study,
+      Language,
+      Participant.y,
+      Gender, 
+      Age, 
+      Education
+    )
+  )
+#partition, split by columns 70/30
+danish_partition <- partition(danish_dat, p = 0.7, 
+                              cat_col = "Diagnosis", 
+                              id_col = "real_ID")
+
+#cant train a model and test it on the same data, so need to be two(train/test)
+#cut a bit call test data
+#cut a bit and call train data
+#use these models to make predictions, to test if they are accurate
+#Why it is necessary to train a model
+#have to test on data we know
+danish_train <- danish_partition[[1]]
+danish_test <- danish_partition[[2]] %>% 
+  rename(ASD = "ASD (speakingtime/nsyll)", 
+         articulation = "articulation rate (nsyll / phonationtime)",
+         speechrate = "speechrate (nsyll/dur)",
+         phonationtime = "phonationtime (s)", 
+         dur = "dur (s)")
+#machine learning, training model
+
+```
+
+
+### Simple model
+```{r}
+#train data on training bit
+#
+simple_train <- danish_train %>% 
+  mutate(pitch_variability = normalize(pitch_variability), 
+         row_num = row_number())
+
+#general linear model predict schizophrenic diagnosis based on pitch and using training data
+#training model using pitch to predict diagnosis
+simple_fixed <- glm(Diagnosis ~ pitch_variability, simple_train, family = "binomial")
+
+#takes predictions from the model and compares them to the "truth"
+#predict diagnosis please!
+#design model to split diagnosis and hopefully make accurate predictions
+#how many does it get wrong?
+result <- predict_to_tibble(simple_fixed) %>% 
+  left_join(simple_train) %>% 
+  select(pred, Diagnosis) %>% 
+  mutate(pred = factor(pred, levels = levels(Diagnosis)))
+
+
+#how many does the model get wrong? that is the purpose of a confusion matrix
+#machine doesn't work because it always predicts participants to be controls. 
+#accuracy was 0.557 only due to their being slightly more controls than schizophrenics
+#model is inaccurate, cant predict this way
+#false negatives because it predicts people to not have schizophrenia no matter what
+confusionMatrix(result$pred, result$Diagnosis)
+
+#testing accuracy of model 0.5
+my_auc(result$Diagnosis, result$pred)
+```
+
+
+### Let's not try tidymodels (for the splitting)
+```{r}
+#cross validation
+#takes training data and breaks it into 5 
+#testing model to make sure it isn't over fitted
+#comparing 5 different samples of participants
+#train on 4 pieces and predict on 1 piece
+#to check accuracy of model
+#consider all possible combinations of the 5 pieces and take the model that gets the best accuracy on average
+fold_model_data <- danish_train %>% 
+  fold(
+      data = ., k = 5,
+      cat_col = 'Diagnosis',
+      id_col = 'real_ID',
+      num_fold_cols = 3,
+      handle_existing_fold_cols = "keep"
+    ) 
+
+#should I add a plot here to show how data is split?
+
+```
+
+### Trying penalized logistic regression
+```{r}
+#making more functions for testing models
+#logistic regression with penalties
+remove_folds <- function(dat) {
+  dat %>% 
+    select(!starts_with(".fold"))
+}
+
+#model where it puts in a penalty, make sure model doesnt get too complex and limits over fiting
+#
+tidy_lasso_log_model <- function(train_data, formula, hyperparameters) {
+  #function takes data, formula (model), with some hyperparameters
+   lasso_model <- 
+     logistic_reg(penalty = hyperparameters[["lambda"]], mixture = 1) %>%
+     set_engine("glmnet") %>% 
+     fit(formula, train_data)
+   lasso_model
+}
+
+#function for predictions
+tidy_lasso_predict <- function(test_data, model, formula, hyperparameters, train_data) {
+  predict(model, test_data, type = "prob") %>%
+    # Schizophrenia
+    pull(2)
+}
+
+#takes folded data and makes it more neat
+#setting in the units to specify what we are measuring
+#makes it easier for US to interpret
+fold_data_master <- fold_model_data %>% 
+  rename(ASD = "ASD (speakingtime/nsyll)", 
+         articulation = "articulation rate (nsyll / phonationtime)",
+         speechrate = "speechrate (nsyll/dur)",
+         phonationtime = "phonationtime (s)", 
+         dur = "dur (s)") %>% 
+  select(-real_ID, -Study, -study_nr) %>% 
+  #removes NA's if there are too many
+  #removes any participant with more than 10% NA answers
+  select(where(~mean(is.na(.x)) < 0.1)) %>% 
+  drop_na()
+
+#lambda punishment for complexity
+
+hparams <- list("lambda" = 10^seq(-3, -1, length.out = 10))
+
+#use cross validate function
+#put in my data, use my formulas
+#runs entire cross validation model
+#each model has to be trained and tested 3x
+cv_master <- 
+  cross_validate_fn(
+    data = fold_data_master, 
+    formulas = "Diagnosis ~ (.)^2", 
+    model_fn = tidy_lasso_log_model, 
+    predict_fn = tidy_lasso_predict, 
+    preprocess_fn = preprocess_functions("standardize"),
+    #train on 3 folds and test on 2
+    fold_cols = paste0(".folds_", 1:3), 
+    hyperparameters = hparams,
+    type = "binomial"
+  )
+
+#finds out which hyperparameter gave the best average score in cross validation
+best_lambda <- cv_master %>% 
+  filter(AUC == max(AUC)) %>% 
+  pull(HParams) %>% 
+  unlist()
+
+
+best_lambda
+
+#creates model using that best lambda
+best_model <- tidy_lasso_log_model(remove_folds(fold_data_master),
+                                   Diagnosis ~ .^2, 
+                                   list("lambda" = best_lambda))
+
+
+cv_master %>% 
+  filter(AUC == max(AUC))
+
+#gets the parameters of best_model
+best_parameters <- best_model %>% 
+  tidy %>% 
+  filter(estimate != 0) %>% 
+  mutate(estimate = round(estimate, 5)) %>% 
+  arrange(desc(abs(estimate))) 
+
+View(best_parameters)
+
+
+```
+
+### Plotting "best" parameters
+```{r}
+colour_palette <- c("positive" = "#00CCFF", 
+                    "negative" = "#993366")
+
+best_parameters %>% 
+  mutate(direction = if_else(estimate > 0, "positive", "negative")) %>% 
+  ggplot(aes(x = reorder(term, abs(estimate)), y = estimate, fill = direction)) + 
+  geom_col(width = 0.7) + 
+  scale_fill_manual(values = colour_palette, 
+                    limits = names(colour_palette)) + 
+  coord_flip() + 
+  theme_bw() + 
+  labs(title = "The 'Best' Predictors", x = "Predictors")
+
+names(best_parameters)
+```
+
+
+```{r}
+
+#take train model and test on test data
+preds <- predict(best_model, danish_test)
+
+evaluation_results <- danish_test %>% 
+  bind_cols(preds) %>% 
+  mutate(Diagnosis = as_factor(Diagnosis)) %>% 
+  select(true_label = Diagnosis, 
+         prediction = .pred_class)
+
+metrics(evaluation_results, true_label, prediction)
+
+
+confusionMatrix(evaluation_results$true_label, evaluation_results$prediction)
+```
+
+
+### Plotting ROC curve
+```{r}
+#install.packages("ROCR")
+library(ROCR)
+
+predicts <- predict(best_model, danish_test, type = "prob") %>% 
+  pull(.pred_Schizophrenia) %>% 
+  list
+
+preds <- ROCR::prediction(predicts, list(evaluation_results$true_label))
+perf <- performance(preds,"tpr","fpr")
+
+plot(perf, colorize=T)
+
+1 - my_auc(evaluation_results$true_label, evaluation_results$prediction)
+```
+
+
+
+
+

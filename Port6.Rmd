@@ -1,0 +1,135 @@
+---
+title: "Portfolio 6"
+author: "Cassandra Rempel"
+date: "2/10/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(readr,dplyr,janitor, stringr,lmerTest, tidyverse, lme4, ggplot2, ggpubr, remotes,  RColorBrewer, lattice)
+remotes::
+
+path_to_this_file <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(path_to_this_file)
+
+data <-  read_delim("data.csv", ";", escape_double = FALSE, trim_ws = TRUE) 
+
+#change variable type to use later
+data$Reaction_time <- as.numeric(data$Reaction_time)
+data$Congruity <- as.factor(data$Congruity)
+data$Correctness <- as.factor (data$Correctness)
+data$Response <- as.factor (data$Response)
+data$Order_number <- as.factor (data$Order_number)
+data$Finger_Screen <- as.factor (data$Finger_Screen)
+
+plot (data$Reaction_time)
+
+#we have negative values, meaning participants pressed the button before they received the question
+#let's remove negative values
+#cut off will be at 2 seconds, 2 seconds or above for a finger press is excessive
+
+data <- data[data$Reaction_time > 0, ]
+data <- data[data$Reaction_time < 2, ]
+
+plot (data$Reaction_time)
+#Are participants slower if it is incongruent and do they get it wrong more often when it is incongruent?
+#RT = reaction time and shows that we are using congruity to predict reaction time
+#random effects allows us to check if participant produces a different relationship between Congruency and reaction time per Participant
+# 1 = the thing I think is different for different participants may have different starting points, allowing us to take intercepts into account
+#lmer likes continuous outcomes because it is linear ;)
+RT_model <- lmer (Reaction_time ~ Congruity + (1 + Congruity|Participant), data = data)
+summary (RT_model)
+
+#models are different because 
+#glmer generalized liner model, it has the ability to do more things than lmer
+#correctness is not continuous because it is binary
+#predicting correctness for congruity, rather than reaction_time
+#random slope and random intercept
+Correctness_model <- glmer(Correctness ~ Congruity + (1 + Congruity|Participant),
+                           family = binomial,
+                           data = data)
+summary (Correctness_model)
+
+#plot the residuals, this tells us how often the model gets it wrong
+#what matters is there isnt too much variation in the variance
+plot (RT_model)
+
+#how well does this model fit the data?
+
+
+#plot for correctness model residuals
+plot(fitted(RT_model), data$Reaction_time)
+#the purpose of the abline is to show us where data points fall on the prediction line
+abline (a=0, b=1)
+
+#decided not to do but a confusion matrix to look at how well the model fits the data when using binary outcome varibles 
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+The hypothesis is that the background “social” information will influence the performance of the participants, even when explicitly irrelevant to solve the task, thus supporting the idea that humans continuously and implicitly use social information.
+
+
+Trial: a number from 0 to 119, indicating the trial
+Congruity: indicating condition (background fingers moving congruently or not
+Reaction_time: indicating reaction time in milliseconds
+Response: indicating which finger was raised. “lcmd” indicates the index, “lalt” indicates the middle finger
+Correctness: indicating whether the response was the correct one (following the instructions) or not
+Order_number: indicating what the instructions said
+Finger_Screen: indicating which finger moved on the screen
+ID: indicating participant ID
+
+2.How did you go about testing your hypothesis? Describe and motivate the statistical model(s) you used, as well as their quality (e.g.,fit to the data).
+
+4.Comment on whether all participants show the same patterns (aka discuss the random effects). Use a plot to visualize the effects by the participant and refer to it in your answer.
+
+```{r cars}
+#let's make some plots
+#two plots, an effect of congruity and show how different participants are
+#all hail ggplot
+
+data$Reaction_time
+ggplot (data = data, aes(x = Congruity, y = Reaction_time, fill = Congruity))+
+  #we use summary to tell bar plots to use a summary and check the mean as the specific thing we want to look at
+  # stat = summary, so it knows it needs to run stats
+  geom_bar (stat = 'summary' , fun = 'mean' )
+
+#we need to calculate the mean and std error
+#I take my data and group it by congrity to split it up, and then I use summarize to take the summary to take mean and std error
+#I want to make one data point per group
+data_summarized <- data %>%
+  group_by (Congruity) %>%
+  summarize (Reaction_time_mean = mean (Reaction_time),
+             Reaction_time_SE = sqrt (var(Reaction_time) / length (Reaction_time)),
+             #-1 is a hack to make 1 and 2 into 0s and 1s, this allows us to get us the proportion of correct answers by the mean
+             Correctness_mean = mean(as.numeric(Correctness)- 1))
+
+ggplot (data = data_summarized , aes (x = Congruity, y = Reaction_time_mean, fill = Congruity)) +
+  geom_bar (stat = 'identity') +
+  #I want the minimum on the y axis to be teh mean - the SE
+  geom_errorbar (aes(ymin = Reaction_time_mean - Reaction_time_SE,
+                     ymax = Reaction_time_mean + Reaction_time_SE),
+                 width = 0.5)
+
+#correctness model bar plot
+ggplot (data = data_summarized , aes (x = Congruity, y = Correctness_mean, fill = Congruity)) +
+  geom_bar (stat = 'identity') 
+
+#lets make a random effects plot to look at the differences between participants
+#ranef shows us random effects to show difference of how people are effected by congruency and we saw the std deviation of that
+qqmath (ranef(RT_model, condVar = TRUE))
+qqmath (ranef(Correctness_model, condVar = TRUE))
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

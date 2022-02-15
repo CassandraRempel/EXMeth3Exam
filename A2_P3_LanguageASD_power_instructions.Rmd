@@ -1,0 +1,188 @@
+---
+title: "Assignment 1 - Language Development in ASD - Power and simulations"
+author: "Cassandra Rempel"
+date: "2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Welcome to the third exciting part of the Language Development in ASD exercise
+
+In this part of the assignment, we try to figure out how a new study should be planned (i.e. how many participants?) in order to have enough power to replicate the findings (ensuring our sample size is adequate, our alpha at 0.05 and our beta at 0.8):
+1- if we trust the estimates of the current study. Report the power analysis and comment on what you can (or cannot) use its estimates for.
+2- if we are skeptical of the current study. Report the power analysis and comment on what you can (or cannot) use its estimates for.
+3- if we only have access to 30 participants. Identify the power for each relevant effect and discuss whether it's worth to run the study and why
+The list above is also what you should discuss in your code-less report.
+
+
+## Learning objectives
+
+- Learn how to calculate statistical power
+- Critically appraise how to apply frequentist statistical power
+
+### Exercise 1
+
+How much power does your study have (if your model estimates are quite right)?
+- Load your dataset (both training and testing), fit your favorite model, assess power for your effects of interest (probably your interactions).
+- Report the power analysis and comment on what you can (or cannot) use its estimates for.
+- Test how many participants you would have to have to replicate the findings (assuming the findings are correct)
+
+N.B. Remember that main effects are tricky once you have interactions in the model (same for 2-way interactions w 3-way interactions in the model). If you want to test the power of main effects, run a model excluding the interactions.
+N.B. Check this paper: https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.12504
+You will be using:
+- powerSim() to calculate power
+- powerCurve() to estimate the needed number of participants
+- extend() to simulate more participants
+
+```{r}
+library(tidyverse, lme4)
+library(simr)
+
+#load the data
+data <- read.csv("data_a2_p3.csv")
+summary(data)
+
+#Removing NAs from fixed effects because that makes sense
+#called isolated to say isolated variables
+isolated <- data %>% 
+  dplyr::select(ID, CHI_MLU, VISIT, Diagnosis, Gender, Age) %>%  
+  na.omit()
+
+#Correcting classes, let's make them useable 
+isolated$Diagnosis <- as.factor(isolated$Diagnosis)
+isolated$Gender <- as.factor(isolated$Gender)
+isolated$ID <- as.factor(isolated$ID)
+str(isolated)
+```
+
+
+```{r}
+
+#this section is used as the start to figure out power curves and how to utilize them effectively. This is the start point.
+#model
+m <- lmer(CHI_MLU ~ Gender + Age + Diagnosis*VISIT + I(VISIT^3) + (1 + VISIT | ID), isolated, REML = F)
+summary(m)
+
+#power simulation
+power_VD <-  powerSim (m, simr::fixed("Diagnosis:VISIT"), nsim = 50)
+power_VD
+
+#PowerCurve for VISIT*Diagnosis - 50 simulation standard
+powerCurveVD <- powerCurve(m, fixed("Diagnosis:VISIT"), along = "ID", nsim = 50)
+powerCurveVD
+plot(powerCurveVD)
+
+```
+
+
+### Exercise 2
+
+How would you perform a more conservative power analysis?
+- Identify and justify a minimum effect size for each of your relevant effects
+- take the model from exercise 1 and replace the effects with the minimum effect size that you'd accept.
+- assess the power curve by Child.ID, identifying an ideal number of participants to estimate each effect
+- if your power estimates do not reach an acceptable threshold simulate additional participants and repeat the previous analysis
+- Report the power analysis and comment on what you can (or cannot) use its estimates for.
+
+```{r}
+#same model as above
+m2 <- lmer(CHI_MLU ~ Gender + Age + Diagnosis*VISIT + I(VISIT^3) + (1 + VISIT | ID), isolated, REML = F)
+
+#Identify and justify a minimum effect size for each of your relevant effects
+summary(data$CHI_MLU)
+
+#CHI_MLU falls between 0 and 4.365, mean is 2.003 :
+
+TD <- subset(data, Diagnosis =="TD")
+ASD <- subset(data,Diagnosis =="ASD")
+
+summary (TD$CHI_MLU) 
+# Min. 1st Qu.  Median    Mean   3rd Qu.    Max.   
+#0.5584  1.5706  2.3268  2.3082  2.8964  4.3648 
+summary(ASD$CHI_MLU)
+# Min. 1st Qu.  Median    Mean   3rd Qu.    Max. 
+# 0.000   1.017   1.395   1.663   2.222   4.302
+
+#how to calculate effect size, by taking the difference between the two groups (e.g., the mean of treatment group minus the mean of the control group) and dividing it by the standard deviation of one of the groups.
+
+#1.663 - 2.3082 = -0.645 
+
+
+#this is the fixed effect
+fixef(m2)["DiagnosisTD:VISIT"] <- 0.1
+minpowerCurveVD <- powerCurve(m2, fixed("Diagnosis:VISIT"), along = "ID", nsim = 50)
+minpowerCurveVD
+
+plot(minpowerCurveVD)
+
+#produces too small a lower boundary, thus extension is necessary
+```
+#https://humburg.github.io/Power-Analysis/simr_power_analysis.html 
+
+```{r}
+#code for performing and ploting the extended curve, 100 participants
+extendm2 <- extend(m2, along = "ID", n = 100)
+
+extend_minpowerCurveVD <- powerCurve(extendm2, fixed("Diagnosis:VISIT"), along = "ID", nsim = 100)
+extend_minpowerCurveVD
+
+plot(extend_minpowerCurveVD)
+
+```
+
+
+### Exercise 3
+
+Assume you have only the resources to collect 30 kids (15 with ASD and 15 TDs). Identify the power for each relevant effect and discuss whether it's worth to run the study and why
+
+```{r}
+#creating a small dataframe with 15 asd and 15 td for a total of 30
+td <- isolated %>% 
+  filter(Diagnosis == "TD")
+asd <- isolated %>% 
+  filter(Diagnosis == "ASD")
+sampletd <- td$ID %>% 
+  unique() %>% 
+  sample(size = 15)
+```
+
+
+```{r}
+#filter function exercise
+sampleasd <- asd$ID %>% 
+  unique() %>% 
+  sample(size = 15)
+smalltd <- isolated %>% 
+  filter(ID %in% sampletd) 
+smallasd <- isolated %>% 
+  filter(ID %in% sampleasd)
+small <- rbind(smalltd, smallasd)
+
+#assumes the minimum effect, if not otherwise stated
+
+#new model with the small df
+m3 <- lmer(CHI_MLU ~ Gender + Age + Diagnosis*VISIT + I(VISIT^3) + (1 + VISIT | ID), small, REML = F)
+
+#power calculation
+
+sim_final <- powerSim (m3, simr::fixed("Diagnosis:VISIT"), nsim = 50)
+sim_final
+sim_powerCurve3 <- powerCurve(m3, fixed("Diagnosis:VISIT"), along = "ID", nsim = 50)
+sim_powerCurve3
+
+plot(sim_powerCurve3)
+
+summary(m3)
+
+#this is with the fixed effect
+
+m4 <- lmer(CHI_MLU ~ Gender + Age + Diagnosis*VISIT + I(VISIT^3) + (1 + VISIT | ID), small, REML = F)
+fixef(m4)["DiagnosisTD:VISIT"] <- 0.1
+final_minCurve <- powerCurve(m4, fixed("Diagnosis:VISIT"), along = "ID", nsim = 50)
+final_minCurve
+
+plot(final_minCurve)
+```
